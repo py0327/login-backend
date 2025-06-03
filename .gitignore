@@ -1,0 +1,19 @@
+# 虚拟环境
+venv/
+myenv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 数据库文件
+*.db
+
+# 上传文件
+uploads/
+
+# 环境变量
+.env
+
+# 日志文件
+*.log
