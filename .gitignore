@@ -17,3 +17,5 @@ uploads/
 
 # 日志文件
 *.log
+
+PyJWT==2.8.0
