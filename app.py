@@ -7,7 +7,9 @@ import uuid
 from datetime import datetime, timedelta
 import os
 from functools import wraps
-from flask_migrate import Migrate  # 新增：数据库迁移支持
+from flask_migrate import Migrate
+import cloudinary
+import cloudinary.uploader
 
 # 初始化 Flask 应用
 app = Flask(__name__)
@@ -17,23 +19,31 @@ CORS(app, origins="*")  # 开发环境允许所有域名，生产环境建议限
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-123')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL', 'sqlite:///database.db'
-)  # 生产环境建议使用 PostgreSQL 等数据库
+)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1')
 
+# 配置 Cloudinary（替换为你的实际值）
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME', 'your_cloud_name'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY', 'your_api_key'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET', 'your_api_secret'),
+    secure=True  # 使用 HTTPS
+)
+
 # 初始化数据库和迁移
 db = SQLAlchemy(app)
-migrate = Migrate(app, db)  # 新增：初始化迁移工具
+migrate = Migrate(app, db)
 
-# 数据模型（已添加性别和简介字段）
+# 数据模型
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(120), nullable=False)
-    avatar = db.Column(db.String(200), default='')
+    avatar = db.Column(db.String(200), default='')  # 存储 Cloudinary 图片 URL
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    isMale = db.Column(db.Integer, default=1)  # 新增：性别（1=男，0=女）
-    description = db.Column(db.String(200), default='')  # 新增：用户简介
+    isMale = db.Column(db.Integer, default=1)  # 性别（1=男，0=女）
+    description = db.Column(db.String(200), default='')  # 用户简介
 
     def check_password(self, password):
         """验证密码"""
@@ -81,9 +91,9 @@ def register():
     username = data.get('username')
     password = data.get('password')
     avatar = data.get('avatar', '')
-    nickName = data.get('nickName', username)  # 默认使用用户名作为昵称
-    isMale = data.get('isMale', 1)  # 默认男性
-    description = data.get('description', '')  # 默认空简介
+    nickName = data.get('nickName', username)
+    isMale = data.get('isMale', 1)
+    description = data.get('description', '')
     
     # 基本验证
     if not username or not password:
@@ -161,7 +171,7 @@ def login():
         }
     }), 200
 
-# 头像上传接口
+# 头像上传接口（使用 Cloudinary）
 @app.route('/api/upload/avatar', methods=['POST'])
 def upload_avatar():
     if 'file' not in request.files:
@@ -171,25 +181,26 @@ def upload_avatar():
     if file.filename == '':
         return jsonify({'message': '文件名不能为空'}), 400
     
-    # 生成唯一文件名
-    file_ext = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
-    filename = f"avatar_{uuid.uuid4().hex}.{file_ext}"
+    try:
+        # 上传到 Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            file,
+            folder="your_app_name/avatars",  # 自定义文件夹，便于管理
+            resource_type="image",
+            format="jpg",  # 强制转换为 JPG 格式
+            quality="auto:good",  # 自动优化图片质量
+            transformation=[
+                {"width": 300, "height": 300, "crop": "fill", "gravity": "face"}  # 裁剪为 300x300 人脸居中
+            ]
+        )
+        
+        return jsonify({
+            'message': '上传成功',
+            'path': upload_result['secure_url']  # 返回 HTTPS URL
+        }), 200
     
-    # 确保上传目录存在
-    upload_dir = 'uploads'
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    # 保存文件
-    file_path = os.path.join(upload_dir, filename)
-    file.save(file_path)
-    
-    # 返回可访问的文件路径（生产环境需根据实际域名调整）
-    file_url = f'/uploads/{filename}' if app.config['DEBUG'] else f'https://your-domain.com/uploads/{filename}'
-    
-    return jsonify({
-        'message': '上传成功',
-        'path': file_url
-    }), 200
+    except Exception as e:
+        return jsonify({'message': '上传失败', 'error': str(e)}), 500
 
 # 获取用户信息接口
 @app.route('/api/user/<int:user_id>', methods=['GET'])
@@ -213,21 +224,18 @@ def get_user(current_user, user_id):
         }
     }), 200
 
-# 健康检查接口（用于测试服务是否正常）
+# 健康检查接口
 @app.route('/api/health')
 def health_check():
     return jsonify({'status': 'ok', 'message': '服务正常运行'}), 200
 
-# 数据库初始化命令（保留原有的初始化逻辑）
+# 数据库初始化命令
 @app.cli.command("init-db")
 def init_db():
-    """初始化数据库表和上传目录"""
+    """初始化数据库表"""
     with app.app_context():
         db.create_all()
-        upload_dir = 'uploads'
-        if not os.path.exists(upload_dir):
-            os.makedirs(upload_dir)
-        print("✅ 数据库表和上传目录已初始化")
+        print("✅ 数据库表已初始化")
 
 # 错误处理
 @app.errorhandler(404)
