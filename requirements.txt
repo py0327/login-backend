@@ -7,10 +7,6 @@ flask-cors==4.0.0
 PyJWT==2.8.0
 bcrypt==4.0.1
 gunicorn==20.1.0
-flask
-flask-sqlalchemy
-flask-cors
-pyjwt
-bcrypt
-# 新增 flask-migrate
-flask-migrate
+flask-migrate==4.0.5
+cloudinary==1.33.0
+python-dotenv==1.0.0  # 本地开发用，Railway 可选
