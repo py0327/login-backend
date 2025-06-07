@@ -1,3 +1,5 @@
+# app.py (修改后)
+
 from flask import Flask, request, jsonify, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
@@ -126,6 +128,7 @@ def register():
         db.session.add(new_user)
         db.session.commit()
         return jsonify({
+            'code': 201,  # 添加状态码字段与前端保持一致
             'message': '注册成功',
             'user': {
                 'id': new_user.id,
@@ -136,29 +139,32 @@ def register():
         }), 201
     except Exception as e:
         db.session.rollback()
-        return jsonify({'message': '注册失败', 'error': str(e)}), 500
+        return jsonify({'code': 500, 'message': '注册失败', 'error': str(e)}), 500
 
 # 登录接口
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
     if not data:
-        return jsonify({'message': '请求数据为空'}), 400
+        return jsonify({'code': 400, 'message': '请求数据为空'}), 400
     
-    username = data.get('username')
+    # 兼容前端的 identifier 字段
+    identifier = data.get('identifier') or data.get('username')
     password = data.get('password')
     
-    if not username or not password:
-        return jsonify({'message': '用户名和密码不能为空'}), 400
+    if not identifier or not password:
+        return jsonify({'code': 400, 'message': '用户名和密码不能为空'}), 400
     
-    user = User.query.filter_by(username=username).first()
+    # 支持用户名或手机号登录
+    user = User.query.filter_by(username=identifier).first()
     
     if not user or not user.check_password(password):
-        return jsonify({'message': '用户名或密码错误'}), 401
+        return jsonify({'code': 401, 'message': '用户名或密码错误'}), 401
     
     token = generate_token(user.id)
     
     return jsonify({
+        'code': 200,  # 添加状态码字段与前端保持一致
         'message': '登录成功',
         'token': token,
         'user': {
@@ -175,11 +181,11 @@ def login():
 @app.route('/api/upload/avatar', methods=['POST'])
 def upload_avatar():
     if 'file' not in request.files:
-        return jsonify({'message': '未上传文件'}), 400
+        return jsonify({'code': 400, 'message': '未上传文件'}), 400
     
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'message': '文件名不能为空'}), 400
+        return jsonify({'code': 400, 'message': '文件名不能为空'}), 400
     
     try:
         # 上传到 Cloudinary
@@ -195,25 +201,27 @@ def upload_avatar():
         )
         
         return jsonify({
+            'code': 200,
             'message': '上传成功',
             'path': upload_result['secure_url']  # 返回 HTTPS URL
         }), 200
     
     except Exception as e:
-        return jsonify({'message': '上传失败', 'error': str(e)}), 500
+        return jsonify({'code': 500, 'message': '上传失败', 'error': str(e)}), 500
 
 # 获取用户信息接口
 @app.route('/api/user/<int:user_id>', methods=['GET'])
 @token_required
 def get_user(current_user, user_id):
     if current_user.id != user_id:
-        return jsonify({'message': '权限不足'}), 403
+        return jsonify({'code': 403, 'message': '权限不足'}), 403
     
     user = User.query.get(user_id)
     if not user:
-        return jsonify({'message': '用户不存在'}), 404
+        return jsonify({'code': 404, 'message': '用户不存在'}), 404
     
     return jsonify({
+        'code': 200,
         'user': {
             'id': user.id,
             'username': user.username,
@@ -240,12 +248,14 @@ def init_db():
 # 错误处理
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'message': '资源未找到'}), 404
+    return jsonify({'code': 404, 'message': '资源未找到'}), 404
 
 @app.errorhandler(500)
 def internal_server_error(error):
-    return jsonify({'message': '服务器内部错误'}), 500
+    return jsonify({'code': 500, 'message': '服务器内部错误'}), 500
 
 if __name__ == '__main__':
+    # 使用 Gunicorn 时由环境变量控制，直接运行时使用默认值
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug)
