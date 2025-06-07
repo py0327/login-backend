@@ -1,10 +1,22 @@
-flask==3.0.0
-flask-cors==4.0.0
-flask-sqlalchemy==3.1.1
-flask-migrate==4.0.5
-PyJWT==4.5.3
-bcrypt==4.1.1
-cloudinary==1.41.0
-gunicorn==21.2.0
-psycopg2-binary==2.9.9
-python-dotenv==1.0.0
+# 核心后端框架
+flask
+flask-cors
+flask-sqlalchemy
+flask-migrate
+
+# 认证与安全
+PyJWT
+bcrypt
+
+# 云存储
+cloudinary
+
+# 生产服务器
+gunicorn
+
+# 数据库驱动（根据你使用的数据库选择）
+psycopg2-binary  # PostgreSQL
+# pymysql         # MySQL (如果使用 MySQL，取消注释此行)
+
+# 环境变量加载（仅开发环境需要，生产环境通常由 Railway 直接设置）
+python-dotenv
