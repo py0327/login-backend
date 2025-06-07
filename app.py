@@ -1,102 +1,57 @@
-from flask import Flask, request, jsonify, send_from_directory
+# app.py (修改后)
+
+from flask import Flask, request, jsonify, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-import os
-from datetime import datetime, timedelta
 import jwt
+import bcrypt
+import uuid
+from datetime import datetime, timedelta
+import os
 from functools import wraps
-from jwt import encode as jwt_encode
+from flask_migrate import Migrate
+import cloudinary
+import cloudinary.uploader
 
+# 初始化 Flask 应用
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///wechat_app.db'
-app.config['UPLOAD_FOLDER'] = './uploads'
-app.config['SECRET_KEY'] = '060327'  # 生产环境建议改为更安全的随机字符串
-CORS(app)
-db = SQLAlchemy(app)
+CORS(app, origins="*")  # 开发环境允许所有域名，生产环境建议限制为小程序域名
 
-# 数据库模型（使用前端的字段名：account, nickName, isMale）
+# 配置项
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-123')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL', 'sqlite:///database.db'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1')
+
+# 配置 Cloudinary（替换为你的实际值）
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME', 'your_cloud_name'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY', 'your_api_key'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET', 'your_api_secret'),
+    secure=True  # 使用 HTTPS
+)
+
+# 初始化数据库和迁移
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+
+# 数据模型
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    account = db.Column(db.String(11), unique=True, nullable=False)  # 手机号
-    password_hash = db.Column(db.String(128), nullable=False)
-    nickName = db.Column(db.String(50), nullable=False)  # 昵称
-    description = db.Column(db.String(200))  # 个人描述
-    isMale = db.Column(db.Integer, default=0)  # 性别（0=女，1=男）
-    avatarPath = db.Column(db.String(200))  # 头像路径
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(120), nullable=False)
+    avatar = db.Column(db.String(200), default='')  # 存储 Cloudinary 图片 URL
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    isMale = db.Column(db.Integer, default=1)  # 性别（1=男，0=女）
+    description = db.Column(db.String(200), default='')  # 用户简介
 
-    @property
-    def password(self):
-        raise AttributeError('password is not a readable attribute')
+    def check_password(self, password):
+        """验证密码"""
+        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
-    @password.setter
-    def password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def verify_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-# 头像上传接口
-@app.route('/api/upload/avatar', methods=['POST'])
-def upload_avatar():
-    file = request.files['avatar']
-    if not file or not allowed_file(file.filename):
-        return jsonify({'error': '无效的文件'}), 400
-    
-    filename = f"avatar_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    return jsonify({'path': filename}), 200
-
-# 注册接口（适配前端字段名）
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    
-    # 校验
-    if not data.get('account') or len(data['account']) != 11:
-        return jsonify({'error': '手机号格式错误'}), 400
-    
-    if User.query.filter_by(account=data['account']).first():
-        return jsonify({'error': '手机号已注册'}), 400
-    
-    # 创建用户（直接使用前端字段名）
-    user = User(
-        account=data['account'],
-        password=data['password'],
-        nickName=data['nickName'],
-        description=data.get('description', ''),
-        isMale=data.get('isMale', 0),
-        avatarPath=data.get('avatarPath')
-    )
-    
-    db.session.add(user)
-    db.session.commit()
-    
-    return jsonify({'message': '注册成功'}), 201
-
-# ---------------- 新增登录功能 ----------------
-
-# 生成JWT令牌
-def generate_token(user_id):
-    payload = {
-        'user_id': user_id,
-        'exp': datetime.utcnow() + timedelta(hours=24)  # 令牌有效期24小时
-    }
-    return jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
-
-# 验证JWT令牌
-def decode_token(token):
-    try:
-        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-        return payload['user_id']
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
-
-# 令牌验证装饰器
+# JWT 验证装饰器
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -105,82 +60,202 @@ def token_required(f):
             token = request.headers['Authorization'].replace('Bearer ', '')
         
         if not token:
-            return jsonify({'error': '令牌缺失', 'code': 401}), 401
+            return jsonify({'message': 'Token 缺失!'}), 401
         
-        user_id = decode_token(token)
-        if not user_id:
-            return jsonify({'error': '无效令牌', 'code': 401}), 401
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = User.query.filter_by(id=data['user_id']).first()
+            if not current_user:
+                return jsonify({'message': '用户不存在!'}), 404
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token 过期!'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'message': '无效 Token!'}), 401
         
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({'error': '用户不存在', 'code': 401}), 401
-        
-        return f(user, *args, **kwargs)
+        return f(current_user, *args, **kwargs)
     return decorated
+
+# 生成 JWT 令牌
+def generate_token(user_id):
+    payload = {
+        'user_id': user_id,
+        'exp': datetime.utcnow() + timedelta(hours=24)
+    }
+    return jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
+
+# 注册接口
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请求数据为空'}), 400
+    
+    username = data.get('username')
+    password = data.get('password')
+    avatar = data.get('avatar', '')
+    nickName = data.get('nickName', username)
+    isMale = data.get('isMale', 1)
+    description = data.get('description', '')
+    
+    # 基本验证
+    if not username or not password:
+        return jsonify({'message': '用户名和密码不能为空'}), 400
+    
+    if len(username) < 3 or len(username) > 20:
+        return jsonify({'message': '用户名长度应为 3-20 个字符'}), 400
+    
+    if len(password) < 6:
+        return jsonify({'message': '密码长度至少为 6 个字符'}), 400
+    
+    # 检查用户名是否已存在
+    existing_user = User.query.filter_by(username=username).first()
+    if existing_user:
+        return jsonify({'message': '用户名已存在'}), 409
+    
+    # 加密密码
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    # 创建新用户
+    new_user = User(
+        username=username,
+        password_hash=password_hash,
+        avatar=avatar,
+        isMale=isMale,
+        description=description
+    )
+    
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        return jsonify({
+            'code': 201,  # 添加状态码字段与前端保持一致
+            'message': '注册成功',
+            'user': {
+                'id': new_user.id,
+                'username': new_user.username,
+                'avatar': new_user.avatar,
+                'created_at': new_user.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            }
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'code': 500, 'message': '注册失败', 'error': str(e)}), 500
 
 # 登录接口
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
-    account = data.get('account')
-    password = data.get('password')
-
-    # 参数校验
-    if not account or not password:
-        return jsonify({'error': '请输入手机号和密码', 'code': 400}), 400
-
-    # 查询用户
-    user = User.query.filter_by(account=account).first()
+    if not data:
+        return jsonify({'code': 400, 'message': '请求数据为空'}), 400
     
-    # 验证账号密码
-    if not user or not user.verify_password(password):
-        return jsonify({'error': '账号或密码错误', 'code': 401}), 401
-
-    # 生成令牌并返回
+    # 兼容前端的 identifier 字段
+    identifier = data.get('identifier') or data.get('username')
+    password = data.get('password')
+    
+    if not identifier or not password:
+        return jsonify({'code': 400, 'message': '用户名和密码不能为空'}), 400
+    
+    # 支持用户名或手机号登录
+    user = User.query.filter_by(username=identifier).first()
+    
+    if not user or not user.check_password(password):
+        return jsonify({'code': 401, 'message': '用户名或密码错误'}), 401
+    
     token = generate_token(user.id)
     
-    # 构建用户信息（避免返回敏感字段）
-    user_info = {
-        'userId': user.id,
-        'account': user.account,
-        'nickName': user.nickName,
-        'description': user.description,
-        'isMale': user.isMale,
-        'avatarPath': user.avatarPath,
-        'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
     return jsonify({
-        'code': 200,
+        'code': 200,  # 添加状态码字段与前端保持一致
         'message': '登录成功',
         'token': token,
-        'user': user_info
-    }), 200
-
-# 获取用户信息接口
-@app.route('/api/user/info', methods=['GET'])
-@token_required
-def get_user_info(user):
-    return jsonify({
-        'code': 200,
-        'message': '获取成功',
         'user': {
-            'userId': user.id,
-            'account': user.account,
-            'nickName': user.nickName,
-            'description': user.description,
+            'id': user.id,
+            'username': user.username,
+            'avatar': user.avatar,
             'isMale': user.isMale,
-            'avatarPath': user.avatarPath,
+            'description': user.description,
             'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
         }
     }), 200
 
-# 工具函数
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'gif'}
+# 头像上传接口（使用 Cloudinary）
+@app.route('/api/upload/avatar', methods=['POST'])
+def upload_avatar():
+    if 'file' not in request.files:
+        return jsonify({'code': 400, 'message': '未上传文件'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'code': 400, 'message': '文件名不能为空'}), 400
+    
+    try:
+        # 上传到 Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            file,
+            folder="your_app_name/avatars",  # 自定义文件夹，便于管理
+            resource_type="image",
+            format="jpg",  # 强制转换为 JPG 格式
+            quality="auto:good",  # 自动优化图片质量
+            transformation=[
+                {"width": 300, "height": 300, "crop": "fill", "gravity": "face"}  # 裁剪为 300x300 人脸居中
+            ]
+        )
+        
+        return jsonify({
+            'code': 200,
+            'message': '上传成功',
+            'path': upload_result['secure_url']  # 返回 HTTPS URL
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'code': 500, 'message': '上传失败', 'error': str(e)}), 500
 
-# 启动
-if __name__ == '__main__':
+# 获取用户信息接口
+@app.route('/api/user/<int:user_id>', methods=['GET'])
+@token_required
+def get_user(current_user, user_id):
+    if current_user.id != user_id:
+        return jsonify({'code': 403, 'message': '权限不足'}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'code': 404, 'message': '用户不存在'}), 404
+    
+    return jsonify({
+        'code': 200,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'avatar': user.avatar,
+            'isMale': user.isMale,
+            'description': user.description,
+            'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
+    }), 200
+
+# 健康检查接口
+@app.route('/api/health')
+def health_check():
+    return jsonify({'status': 'ok', 'message': '服务正常运行'}), 200
+
+# 数据库初始化命令
+@app.cli.command("init-db")
+def init_db():
+    """初始化数据库表"""
     with app.app_context():
         db.create_all()
-    app.run(debug=True, port=5000)
+        print("✅ 数据库表已初始化")
+
+# 错误处理
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'code': 404, 'message': '资源未找到'}), 404
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    return jsonify({'code': 500, 'message': '服务器内部错误'}), 500
+
+if __name__ == '__main__':
+    # 使用 Gunicorn 时由环境变量控制，直接运行时使用默认值
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug)
